@@ -1,0 +1,5 @@
+target/
+.mypy_cache/
+
+# TODO: remove
+/typings/

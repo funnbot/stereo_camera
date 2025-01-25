@@ -1,0 +1,19 @@
+[project]
+name = "stereo"
+version = "0.1.0"
+requires-python = "=3.11.2"
+dependencies = ["picamera2"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+extraPaths = ["/usr/lib/python3/dist-packages"]
+stubPath = "./typings"
+
+reportMissingTypeStubs = true
+reportIncompleteStub = true
+reportUnusedVariable = "none"
+reportUnusedImport = "none"
+reportMissingTypeArgument = "none"
+
+[tool.ruff]
+# ignore = ["F401"]

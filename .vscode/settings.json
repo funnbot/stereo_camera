@@ -1,0 +1,21 @@
+{
+    "python.terminal.activateEnvironment": false,
+    "terminal.integrated.profiles.linux": {
+        "bash": {
+            "path": "bash",
+            "args": [
+                "--init-file",
+                "./init_shell.sh",
+            ],
+            "color": "terminal.ansiYellow",
+            "icon": "python",
+        }
+    },
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "python.analysis.languageServerMode": "full",
+    "python.analysis.autoImportCompletions": true,
+    "rust-analyzer.cachePriming.enable": false,
+    "rust-analyzer.cachePriming.numThreads": 1,
+    "rust-analyzer.diagnostics.styleLints.enable": true,
+    "rust-analyzer.lru.capacity": 64,
+}

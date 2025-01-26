@@ -84,9 +84,8 @@ impl<'a> Camera<'a> {
         });
 
         let mut controls = ControlList::new();
-        controls.set(ctrls::AeEnable(false))?;
-        controls.set(ctrls::ExposureTime(10_000))?;
-        // controls.set(ctrls::AwbEnable(false))?;
+        Self::match_controls(&mut controls)?;
+        // controls.set(ctrls::MaxLatency(0))?; // 0 means per-frame control
         self.cam.start(Some(&controls))?;
         Ok(())
     }
@@ -117,8 +116,24 @@ impl<'a> Camera<'a> {
         Ok(reqs)
     }
 
+    fn match_controls(controls: &mut ControlList) -> Result<()> {
+        controls.set(ctrls::AeEnable(false))?;
+        controls.set(ctrls::ExposureTime(50_000))?;
+        controls.set(ctrls::ColourGains([0.9235342, 3.1196184]))?;
+        controls.set(ctrls::AnalogueGain(1.0))?;
+        controls.set(ctrls::HdrMode::Off)?;
+        controls.set(ctrls::AfMode::Manual)?;
+        controls.set(ctrls::LensPosition(0.5))?;
+        controls.set(ctrls::Sharpness(0.0))?;
+        controls.set(ctrls::AwbEnable(false))?;
+        controls.set(ctrls::AeFlickerMode::FlickerOff)?;
+        Ok(())
+    }
+
     pub fn queue_request(&mut self, mut request: Request) -> Result<()> {
         request.reuse(ReuseFlag::REUSE_BUFFERS);
+        Self::match_controls(request.controls_mut())?;
+        // controls.set(ctrls::MaxLatency(0))?; // 0 means per-frame control
         self.cam.queue_request(request)?;
         Ok(())
     }

@@ -50,6 +50,7 @@ fn program() -> Result<()> {
     cams.0.start()?;
     cams.1.start()?;
 
+    println!("2 seconds");
     thread::sleep(Duration::from_secs(2));
 
     cams.0.queue_request(reqs.0)?;
@@ -60,31 +61,37 @@ fn program() -> Result<()> {
     let mut min = Duration::MAX;
     let mut max = Duration::default();
     let mut sum = Duration::default();
+    let mut count = 1;
 
-    for i in 0..10 {
-        cams.0.queue_request(reqs.0)?;
-        cams.1.queue_request(reqs.1)?;
+    // for i in 0..10 {
+    //     cams.0.queue_request(reqs.0)?;
+    //     cams.1.queue_request(reqs.1)?;
 
-        reqs = (cams.0.wait_capture()?, cams.1.wait_capture()?);
-        if i > 4 {
-            let stamps: (i64, i64) = (
-                reqs.0.metadata().get::<ctrls::SensorTimestamp>()?.0,
-                reqs.1.metadata().get::<ctrls::SensorTimestamp>()?.0,
-            );
-            let stamps = (
-                Duration::from_nanos(stamps.0 as u64),
-                Duration::from_nanos(stamps.1 as u64),
-            );
-            let diff = stamps.0.abs_diff(stamps.1);
-            min = min.min(diff);
-            max = max.max(diff);
-            sum += diff;
-        }
-        //println!("Capture difference: {:?}", stamps.0.abs_diff(stamps.1));
-        //thread::sleep(Duration::from_millis(100));
-    }
+    //     reqs = (cams.0.wait_capture()?, cams.1.wait_capture()?);
+    //     if i > 4 {
+    //         let stamps: (i64, i64) = (
+    //             reqs.0.metadata().get::<ctrls::SensorTimestamp>()?.0,
+    //             reqs.1.metadata().get::<ctrls::SensorTimestamp>()?.0,
+    //         );
+    //         let stamps = (
+    //             Duration::from_nanos(stamps.0 as u64),
+    //             Duration::from_nanos(stamps.1 as u64),
+    //         );
+    //         let diff = stamps.0.abs_diff(stamps.1);
+    //         min = min.min(diff);
+    //         max = max.max(diff);
+    //         sum += diff;
+    //         count += 1;
 
-    println!("Min: {:?}, Max: {:?}, Avg: {:?}", min, max, sum / 100);
+    //         if diff < Duration::from_millis(1) {
+    //             break;
+    //         }
+    //     }
+    //     //println!("Capture difference: {:?}", stamps.0.abs_diff(stamps.1));
+    //     //thread::sleep(Duration::from_millis(100));
+    // }
+
+    // println!("Count: {:?}, Min: {:?}, Max: {:?}, Avg: {:?}", count, min, max, sum / count);
 
     let frames = (
         cams.0.extract_frame(&reqs.0)?,

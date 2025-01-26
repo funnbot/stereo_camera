@@ -84,7 +84,7 @@ impl<'a> Camera<'a> {
         });
 
         let mut controls = ControlList::new();
-        Self::match_controls(&mut controls)?;
+        // Self::match_controls(&mut controls)?;
         // controls.set(ctrls::MaxLatency(0))?; // 0 means per-frame control
         self.cam.start(Some(&controls))?;
         Ok(())
@@ -132,7 +132,7 @@ impl<'a> Camera<'a> {
 
     pub fn queue_request(&mut self, mut request: Request) -> Result<()> {
         request.reuse(ReuseFlag::REUSE_BUFFERS);
-        Self::match_controls(request.controls_mut())?;
+        // Self::match_controls(request.controls_mut())?;
         // controls.set(ctrls::MaxLatency(0))?; // 0 means per-frame control
         self.cam.queue_request(request)?;
         Ok(())
@@ -167,7 +167,7 @@ impl<'a> Camera<'a> {
         let img = opencv::core::Mat::new_nd_with_data(&[size.height, size.width], converted_data)
             .unwrap();
         let mut dest = opencv::core::Mat::default();
-        opencv::imgproc::cvt_color_def(&img, &mut dest, opencv::imgproc::COLOR_RGB2BGR).unwrap();
+        opencv::imgproc::cvt_color_def(&img, &mut dest, opencv::imgproc::COLOR_RGB2RGBA).unwrap();
         Ok(dest)
     }
 }

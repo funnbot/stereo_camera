@@ -18,4 +18,5 @@
     "rust-analyzer.cachePriming.numThreads": 1,
     "rust-analyzer.diagnostics.styleLints.enable": true,
     "rust-analyzer.lru.capacity": 64,
+    "rust-analyzer.cargo.buildScripts.enable": true
 }

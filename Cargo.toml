@@ -7,3 +7,5 @@ libcamera = { git = "https://github.com/lit-robotics/libcamera-rs" }
 opencv = { version = "0.94.1", features = ["clang-runtime"] }
 
 [workspace.lints.rust]
+unused_must_use = "deny"
+unused_imports = "allow"

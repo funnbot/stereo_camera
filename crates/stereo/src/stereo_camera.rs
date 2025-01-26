@@ -5,30 +5,43 @@ use libcamera::camera::CameraConfiguration;
 use libcamera::camera::CameraConfigurationStatus;
 use libcamera::camera_manager::CameraList;
 use libcamera::camera_manager::CameraManager;
+use libcamera::control::Control;
+use libcamera::control::ControlList;
+use libcamera::controls as ctrls;
+use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::framebuffer_allocator::FrameBuffer;
 use libcamera::framebuffer_allocator::FrameBufferAllocator;
 use libcamera::framebuffer_map::MemoryMappedFrameBuffer;
 use libcamera::geometry::Size;
 use libcamera::pixel_format::PixelFormat;
+use libcamera::request::Request;
+use libcamera::request::ReuseFlag;
 use libcamera::stream;
+use libcamera::stream::Stream;
 use libcamera::stream::StreamRole;
+use std::cell::Cell;
 use std::error::Error;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::Duration;
+
+type Buffer = MemoryMappedFrameBuffer<FrameBuffer>;
 
 pub struct Camera<'a> {
-    cfg: Option<CameraConfiguration>,
+    cfg: CameraConfiguration,
     cam: ActiveCamera<'a>,
-    alloc: FrameBufferAllocator,
-    buffers: Vec<MemoryMappedFrameBuffer<FrameBuffer>>,
+    rx: Option<mpsc::Receiver<Request>>,
+    stream: Option<Stream>,
 }
 
 impl<'a> Camera<'a> {
     const PIXEL_FORMAT: PixelFormat =
         PixelFormat::new(u32::from_le_bytes([b'R', b'G', b'2', b'4']), 0);
-    const RESOLUTION: Size = Size {
+    pub const FRAME_SIZE: Size = Size {
         width: 4608,
         height: 2592,
     };
+    const BUFFER_COUNT: u32 = 1;
 
     fn generate_configuration(cam: &ActiveCamera) -> CameraConfiguration {
         let mut cfg = cam
@@ -37,8 +50,8 @@ impl<'a> Camera<'a> {
 
         let mut stream_cfg = cfg.get_mut(0).unwrap();
         stream_cfg.set_pixel_format(Self::PIXEL_FORMAT);
-        stream_cfg.set_buffer_count(1);
-        stream_cfg.set_size(Self::RESOLUTION);
+        stream_cfg.set_buffer_count(Self::BUFFER_COUNT);
+        stream_cfg.set_size(Self::FRAME_SIZE);
 
         match cfg.validate() {
             CameraConfigurationStatus::Valid => println!("Camera configuration valid!"),
@@ -51,29 +64,96 @@ impl<'a> Camera<'a> {
         cfg
     }
 
-    pub fn new(cam: ActiveCamera<'a>) -> Result<Self> {
-        let alloc = FrameBufferAllocator::new(&cam);
+    pub fn new(mut cam: ActiveCamera<'a>) -> Result<Self> {
+        let mut cfg = Self::generate_configuration(&cam);
+        cam.configure(&mut cfg)?;
         Ok(Self {
             cam,
-            cfg: None,
-            alloc,
-            buffers: Vec::new(),
+            rx: None,
+            cfg,
+            stream: None,
         })
     }
 
     pub fn start(&mut self) -> Result<()> {
-        self.cfg = Some(Self::generate_configuration(&self.cam));
-        let cfg = self.cfg.as_mut().unwrap();
+        // setup request handling
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        self.cam.on_request_completed(move |req| {
+            tx.send(req).unwrap();
+        });
 
-        self.cam.configure(cfg)?;
-        let stream_cfg = cfg.get(0).unwrap().stream().unwrap();
-        self.buffers = self
-            .alloc
-            .alloc(&stream_cfg)?
+        let mut controls = ControlList::new();
+        controls.set(ctrls::AeEnable(false))?;
+        controls.set(ctrls::ExposureTime(10_000))?;
+        // controls.set(ctrls::AwbEnable(false))?;
+        self.cam.start(Some(&controls))?;
+        Ok(())
+    }
+
+    pub fn stream(&self) -> &Stream {
+        self.stream.as_ref().unwrap()
+    }
+
+    pub fn create_requests(&mut self) -> Result<Vec<Request>> {
+        let stream = self.cfg.get(0).unwrap().stream().unwrap();
+        let mut alloc = FrameBufferAllocator::new(&self.cam);
+        let buffers = alloc
+            .alloc(&stream)?
             .into_iter()
             .map(|buf| MemoryMappedFrameBuffer::new(buf).unwrap())
+            .collect::<Vec<_>>();
+
+        let reqs = buffers
+            .into_iter()
+            .map(|buf| {
+                let mut req = self.cam.create_request(None).unwrap();
+                req.add_buffer(&stream, buf).unwrap();
+                req
+            })
             .collect();
+
+        self.stream = Some(stream);
+        Ok(reqs)
+    }
+
+    pub fn queue_request(&mut self, mut request: Request) -> Result<()> {
+        request.reuse(ReuseFlag::REUSE_BUFFERS);
+        self.cam.queue_request(request)?;
         Ok(())
+    }
+
+    #[must_use]
+    pub fn wait_capture(&mut self) -> Result<Request> {
+        let rx = self.rx.as_ref().unwrap();
+        let mut request = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        Ok(request)
+    }
+
+    pub fn extract_frame<'b>(&self, request: &'b Request) -> Result<&'b [u8]> {
+        let buf: &Buffer = request.buffer(self.stream()).unwrap();
+        let &rgb_data = buf.data().get(0).unwrap();
+        Ok(rgb_data)
+    }
+
+    pub fn convert_frame_to_cv(&self, frame: &[u8]) -> Result<opencv::core::Mat> {
+        let size = opencv::core::Size {
+            width: Self::FRAME_SIZE.width as i32,
+            height: Self::FRAME_SIZE.height as i32,
+        };
+
+        let converted_data: &[opencv::core::Vec3b] = unsafe {
+            std::slice::from_raw_parts(
+                frame.as_ptr() as *const opencv::core::Vec3b,
+                size.width as usize * size.height as usize,
+            )
+        };
+
+        let img = opencv::core::Mat::new_nd_with_data(&[size.height, size.width], converted_data)
+            .unwrap();
+        let mut dest = opencv::core::Mat::default();
+        opencv::imgproc::cvt_color_def(&img, &mut dest, opencv::imgproc::COLOR_RGB2BGR).unwrap();
+        Ok(dest)
     }
 }
 
@@ -82,137 +162,4 @@ impl<'a> StereoCamera<'a> {
     pub fn new(cam1: ActiveCamera<'a>, cam2: ActiveCamera<'a>) -> Result<Self> {
         Ok(Self(Camera::new(cam1)?, Camera::new(cam2)?))
     }
-}
-
-pub(crate) struct LibCameraSystem<'a> {
-    manager: CameraManager,
-    camera_list: Option<CameraList<'a>>,
-    static_cams: Option<(LibCamera<'a>, LibCamera<'a>)>,
-    cams: Option<(ActiveCamera<'a>, ActiveCamera<'a>)>,
-    allocs: Option<(FrameBufferAllocator, FrameBufferAllocator)>,
-}
-
-impl<'a> LibCameraSystem<'a> {
-    const PIXEL_FORMAT: PixelFormat =
-        PixelFormat::new(u32::from_le_bytes([b'R', b'G', b'2', b'4']), 0);
-    const RESOLUTION: Size = Size {
-        width: 4608,
-        height: 2592,
-    };
-
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        let manager = CameraManager::new()?;
-        Ok(Self {
-            manager,
-            static_cams: None,
-            allocs: None,
-            cams: None,
-            camera_list: None,
-        })
-    }
-
-    fn generate_configuration(cam: &ActiveCamera) -> CameraConfiguration {
-        let mut cfg = cam
-            .generate_configuration(&[StreamRole::StillCapture])
-            .expect("Still Capture is supported");
-
-        let mut stream_cfg = cfg.get_mut(0).unwrap();
-        stream_cfg.set_pixel_format(Self::PIXEL_FORMAT);
-        stream_cfg.set_buffer_count(1);
-        stream_cfg.set_size(Self::RESOLUTION);
-
-        match cfg.validate() {
-            CameraConfigurationStatus::Valid => println!("Camera configuration valid!"),
-            CameraConfigurationStatus::Adjusted => {
-                println!("Camera configuration was adjusted: {:?}", cfg)
-            }
-            CameraConfigurationStatus::Invalid => panic!("Error validating camera configuration"),
-        }
-
-        cfg
-    }
-
-    // fn alloc_buffers(cam: &ActiveCamera, alloc: &mut FrameBufferAllocator) -> Result<(), Box<dyn Error>> {
-    //     let cfg = cam.camera();
-    //     let stream_cfg = cfg.get(0).unwrap().stream().unwrap();
-    //     alloc.alloc(&stream_cfg)?;
-    //     Ok(())
-    // }
-
-    pub fn setup_cameras(&'a mut self) -> Result<(), Box<dyn Error>> {
-        self.camera_list = Some(self.manager.cameras());
-
-        self.static_cams = Some((
-            self.camera_list.as_ref().unwrap().get(0).unwrap(),
-            self.camera_list.as_ref().unwrap().get(1).unwrap(),
-        ));
-
-        self.cams = Some((
-            self.static_cams.as_ref().unwrap().0.acquire()?,
-            self.static_cams.as_ref().unwrap().1.acquire()?,
-        ));
-
-        let mut cfgs = (
-            Self::generate_configuration(&self.cams.as_ref().unwrap().0),
-            Self::generate_configuration(&self.cams.as_ref().unwrap().1),
-        );
-
-        let cams = self.cams.as_mut().unwrap();
-
-        cams.0.configure(&mut cfgs.0)?;
-        cams.1.configure(&mut cfgs.1)?;
-        self.allocs = Some((
-            FrameBufferAllocator::new(&cams.0),
-            FrameBufferAllocator::new(&cams.1),
-        ));
-        let stream_cfgs = (
-            cfgs.0.get(0).unwrap().stream().unwrap(),
-            cfgs.1.get(0).unwrap().stream().unwrap(),
-        );
-        let buffers = (
-            self.allocs.as_mut().unwrap().0.alloc(&stream_cfgs.0)?,
-            self.allocs.as_mut().unwrap().1.alloc(&stream_cfgs.1)?,
-        );
-        let buffers = (
-            buffers
-                .0
-                .into_iter()
-                .map(|buf| MemoryMappedFrameBuffer::new(buf).unwrap())
-                .collect::<Vec<_>>(),
-            buffers
-                .1
-                .into_iter()
-                .map(|buf| MemoryMappedFrameBuffer::new(buf).unwrap())
-                .collect::<Vec<_>>(),
-        );
-
-        Ok(())
-    }
-
-    // pub fn capture(&mut self) -> Result<(), Box<dyn Error>> {
-    //     let cams = self.cams.as_mut().unwrap();
-    //     let allocs = self.allocs.as_mut().unwrap();
-    //     let buffers = (
-    //         allocs
-    //             .0
-    //             .alloc(&cams.0.camera().get(0).unwrap().stream().unwrap())?,
-    //         allocs
-    //             .1
-    //             .alloc(&cams.1.camera().get(0).unwrap().stream().unwrap())?,
-    //     );
-    //     let buffers = (
-    //         buffers
-    //             .0
-    //             .into_iter()
-    //             .map(|buf| MemoryMappedFrameBuffer::new(buf).unwrap())
-    //             .collect::<Vec<_>>(),
-    //         buffers
-    //             .1
-    //             .into_iter()
-    //             .map(|buf| MemoryMappedFrameBuffer::new(buf).unwrap())
-    //             .collect::<Vec<_>>(),
-    //     );
-
-    //     Ok(())
-    // }
 }

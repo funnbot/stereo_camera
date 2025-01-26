@@ -4,6 +4,7 @@ use anyhow::{Ok, Result};
 use libcamera::{
     camera::CameraConfigurationStatus,
     camera_manager::CameraManager,
+    controls as ctrls,
     framebuffer::AsFrameBuffer,
     framebuffer_allocator::{FrameBuffer, FrameBufferAllocator},
     framebuffer_map::MemoryMappedFrameBuffer,
@@ -17,8 +18,8 @@ use opencv::{
     boxed_ref::BoxedRef,
     core::{Mat, MatTrait, MatTraitConst, MatTraitConstManual, Size as CVSize, Vec3b},
 };
-use std::fmt::Write as _;
 use std::{fmt::Debug, time::Duration};
+use std::{fmt::Write as _, thread};
 use stereo_camera::{Camera, StereoCamera};
 
 // drm-fourcc does not have MJPEG type yet, construct it from raw fourcc identifier
@@ -37,8 +38,61 @@ fn program() -> Result<()> {
         cameras.get(1).expect("Camera 1 exists"),
     );
     let cams = (cams.0.acquire()?, cams.1.acquire()?);
+    let mut cams = (Camera::new(cams.0)?, Camera::new(cams.1)?);
 
-    let stereo = StereoCamera::new(cams.0, cams.1)?;
+    let mut reqs = (cams.0.create_requests()?, cams.1.create_requests()?);
+    let reqs = (
+        reqs.0.pop().expect("Request exists"),
+        reqs.1.pop().expect("Request exists"),
+    );
+
+    cams.0.start()?;
+    cams.1.start()?;
+
+    thread::sleep(Duration::from_secs(1));
+
+    cams.0.queue_request(reqs.0)?;
+    cams.1.queue_request(reqs.1)?;
+
+    let reqs = (cams.0.wait_capture()?, cams.1.wait_capture()?);
+
+    let stamps: (i64, i64) = (
+        reqs.0.metadata().get::<ctrls::SensorTimestamp>()?.0,
+        reqs.1.metadata().get::<ctrls::SensorTimestamp>()?.0,
+    );
+    let stamps = (
+        Duration::from_nanos(stamps.0 as u64),
+        Duration::from_nanos(stamps.1 as u64),
+    );
+    println!("Capture difference: {:?}", stamps.0.abs_diff(stamps.1));
+
+    cams.0.queue_request(reqs.0)?;
+    cams.1.queue_request(reqs.1)?;
+
+    let reqs = (cams.0.wait_capture()?, cams.1.wait_capture()?);
+
+    let stamps: (i64, i64) = (
+        reqs.0.metadata().get::<ctrls::SensorTimestamp>()?.0,
+        reqs.1.metadata().get::<ctrls::SensorTimestamp>()?.0,
+    );
+    let stamps = (
+        Duration::from_nanos(stamps.0 as u64),
+        Duration::from_nanos(stamps.1 as u64),
+    );
+    println!("Capture difference: {:?}", stamps.0.abs_diff(stamps.1));
+
+    let frames = (
+        cams.0.extract_frame(&reqs.0)?,
+        cams.1.extract_frame(&reqs.1)?,
+    );
+
+    let imgs = (
+        cams.0.convert_frame_to_cv(frames.0)?,
+        cams.1.convert_frame_to_cv(frames.1)?,
+    );
+
+    cv::imgcodecs::imwrite_def("out1.png", &imgs.0).unwrap();
+    cv::imgcodecs::imwrite_def("out2.png", &imgs.1).unwrap();
 
     Ok(())
 }
@@ -270,7 +324,7 @@ where
             .field("shape", &shape)
             .field("dims", &dims)
             .field("channels", &channels)
-            .field("pixel_len", &pixel_len)
+            //.field("pixel_len", &pixel_len)
             .field("depth", &depth)
             .field("step", &step)
             .field("elem_size", &elem_size)
